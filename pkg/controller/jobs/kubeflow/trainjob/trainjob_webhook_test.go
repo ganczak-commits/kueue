@@ -82,15 +82,16 @@ func TestDefault(t *testing.T) {
 	testClusterQueue := utiltesting.MakeClusterQueue("cluster-queue")
 	testLocalQueue := utiltesting.MakeLocalQueue("local-queue", testNamespace.Name).ClusterQueue(testClusterQueue.Name)
 	testCases := map[string]struct {
-		trainJob                     *kftrainerapi.TrainJob
-		defaultQueue                 *kueue.LocalQueue
-		localQueueDefaultingEnabled  bool
-		manageJobsWithoutQueueName   bool
-		withMultiKueueAdmissionCheck bool
-		withDefaultLocalQueue        bool
-		multiKueueEnabled            bool
-		wantTrainJob                 *kftrainerapi.TrainJob
-		wantErr                      error
+		trainJob                        *kftrainerapi.TrainJob
+		defaultQueue                    *kueue.LocalQueue
+		localQueueDefaultingEnabled     bool
+		manageJobsWithoutQueueName      bool
+		withMultiKueueAdmissionCheck    bool
+		withMultiKueueAdmissionStrategy bool
+		withDefaultLocalQueue           bool
+		multiKueueEnabled               bool
+		wantTrainJob                    *kftrainerapi.TrainJob
+		wantErr                         error
 	}{
 		"should suspend a TrainJob with a queue label": {
 			trainJob: testTrainJob.Clone().Queue(testLocalQueue.Name).Obj(),
@@ -126,7 +127,7 @@ func TestDefault(t *testing.T) {
 			localQueueDefaultingEnabled: true,
 			withDefaultLocalQueue:       false,
 		},
-		"should set managedBy to multiKueue if the user didn't specify any": {
+		"should set managedBy to multiKueue if the user didn't specify any (with admission check)": {
 			trainJob: testTrainJob.Clone().Queue(testLocalQueue.Name).Obj(),
 			wantTrainJob: testTrainJob.Clone().Queue(testLocalQueue.Name).
 				Suspend(true).
@@ -135,6 +136,16 @@ func TestDefault(t *testing.T) {
 				Obj(),
 			multiKueueEnabled:            true,
 			withMultiKueueAdmissionCheck: true,
+		},
+		"should set managedBy to multiKueue if the user didn't specify any (with admission strategy)": {
+			trainJob: testTrainJob.Clone().Queue(testLocalQueue.Name).Obj(),
+			wantTrainJob: testTrainJob.Clone().Queue(testLocalQueue.Name).
+				Suspend(true).
+				JobSetLabel(controllerconstants.QueueLabel, testLocalQueue.Name).
+				ManagedBy(kueue.MultiKueueControllerName).
+				Obj(),
+			multiKueueEnabled:               true,
+			withMultiKueueAdmissionStrategy: true,
 		},
 		"should not set managedBy to multiKueue if already specified by the user": {
 			trainJob: testTrainJob.Clone().Queue(testLocalQueue.Name).ManagedBy("user").Obj(),
@@ -169,13 +180,20 @@ func TestDefault(t *testing.T) {
 			queueManager := qcache.NewManager(kClient, cqCache)
 
 			cq := testClusterQueue.Clone()
-			if tc.withMultiKueueAdmissionCheck {
+			if tc.withMultiKueueAdmissionCheck || tc.withMultiKueueAdmissionStrategy {
 				admissionCheck := utiltesting.MakeAdmissionCheck("admission-check").
 					ControllerName(kueue.MultiKueueControllerName).
 					Active(metav1.ConditionTrue).
 					Obj()
 				cqCache.AddOrUpdateAdmissionCheck(log, admissionCheck)
+			}
+			if tc.withMultiKueueAdmissionCheck {
 				cq.AdmissionChecks("admission-check")
+			}
+			if tc.withMultiKueueAdmissionStrategy {
+				cq.
+					ResourceGroup(*utiltesting.MakeFlavorQuotas("flavor1").Obj()).
+					AdmissionCheckStrategy(*utiltesting.MakeAdmissionCheckStrategyRule("admission-check", "flavor1").Obj())
 			}
 
 			if err := cqCache.AddClusterQueue(ctx, cq.Obj()); err != nil {
